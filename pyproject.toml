@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minillm"
+version = "0.1.0"
+description = "极致简化的 LLM 推理框架（单卡推理）"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "torch>=2.4.0",
+    "triton>=3.0.0",
+    "transformers>=4.51.0",
+    "flash-attn",
+    "xxhash",
+    "safetensors",
+    "pillow",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+minillm-qwen2 = "minillm.cli:main"
+minillm-serve = "minillm.server:main"
+minillm-vlm = "minillm.cli_vlm:main"
+minillm-vlm-serve = "minillm.server_vlm:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["minillm*"]
+
+
+[tool.pytest.ini_options]
+markers = [
+    "gpu: 需要 GPU 的测试",
+]
