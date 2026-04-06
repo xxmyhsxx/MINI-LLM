@@ -15,17 +15,6 @@
 - **2026-04-06 更新**：统一公开 VLM 入口为 `minillm.engine.vlm_engine.VLMEngine`，`MultimodalEngine` 仅保留为内部核心实现
 - **2026-04-06 更新**：已在 `ramc` 环境重跑文本与 VLM benchmark；VLM `batch=16` 时，repeat 为 `272.55 vs 29.08 / 40.84 tok/s`，diverse 为 `174.54 vs 35.77 / 62.80 tok/s`（minillm vs HF sdpa / HF flash_attention_2）
 
-## 文档索引
-
-- 排障与维护报告：`/app/minillm/docs/DEBUG_REPORT.md`
-- Benchmark 报告：`/app/minillm/docs/BENCHMARK.md`
-- CUDA Graph 实现分析：`/app/minillm/docs/CUDA_GRAPH_ANALYSIS.md`
-- 完成记录：`/app/minillm/docs/DONE.md`
-- 待办清单：`/app/minillm/docs/TODO.md`
-- 开发计划：`/app/minillm/docs/DEVELOPMENT_PLAN.md`
-- Phase 2 计划：`/app/minillm/docs/PHASE2_PLAN.md`
-- benchmark 原始结果：`/app/minillm/benchmark_results/`
-
 ## 项目概述
 
 MINILLM 参考 `nano-vllm` 的设计，保留单卡推理关键路径，聚焦边缘端场景下的可维护性、可验证性和性能分析能力。
