@@ -68,8 +68,8 @@ def test_parser_accepts_stream_and_profile_flags():
     assert args.profile is True
 
 
-def test_format_metrics_contains_memory_breakdown():
-    """测试性能指标格式化输出包含显存拆分。"""
+def test_format_metrics_merges_redundant_fields():
+    """测试性能指标格式化输出会合并重复字段。"""
     text = format_metrics({
         "ttft_seconds": 0.12,
         "total_time_seconds": 0.56,
@@ -89,12 +89,13 @@ def test_format_metrics_contains_memory_breakdown():
         "cuda_memory_reserved_bytes": 16384,
         "cuda_max_memory_reserved_bytes": 32768,
     })
-    assert "TTFT" in text
-    assert "Model Memory" in text
-    assert "KV Cache Total" in text
-    assert "KV Cache Used Current" in text
-    assert "KV Cache Used Peak" in text
-    assert "CUDA Peak Reserved" in text
+    assert "Latency: TTFT" in text
+    assert "Throughput: Overall" in text
+    assert "Memory: Model" in text
+    assert "KV Peak" in text
+    assert "CUDA Peak" in text
+    assert "KV Cache Used Current" not in text
+    assert "CUDA Peak Reserved" not in text
 
 
 def test_bytes_to_gib():

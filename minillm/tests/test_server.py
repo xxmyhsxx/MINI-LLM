@@ -108,7 +108,7 @@ def test_normalize_prompt_rejects_non_int_tokens():
 
 
 def test_sanitize_metrics_can_include_profile_and_token_ids():
-    """测试最终响应可选择性包含 token 与 profile。"""
+    """测试最终响应可选择性包含 token 与精简 profile。"""
     payload = sanitize_metrics({
         "type": "metrics",
         "seq_id": 1,
@@ -134,7 +134,9 @@ def test_sanitize_metrics_can_include_profile_and_token_ids():
     }, True, True)
     assert payload["text"] == "AB"
     assert payload["token_ids"] == [10, 11]
-    assert payload["metrics"]["kv_cache_used_peak_gib"] > 0
+    assert payload["metrics"]["kv_cache_peak_gib"] > 0
+    assert payload["metrics"]["kv_cache_peak_blocks"] == 6
+    assert "model_bytes" not in payload["metrics"]
 
 
 def test_inference_service_generate_resets_peak_stats():
@@ -151,8 +153,8 @@ def test_inference_service_memory_includes_gib_fields():
     llm = FakeLLM()
     service = InferenceService(llm, {"model": "fake", "max_model_len": 512, "max_num_seqs": 1, "cache_size_mb": None, "cache_size_tokens": 1024, "gpu_memory_utilization": 0.9, "enforce_eager": False})
     profile = service.memory()
-    assert profile["kv_cache_used_current_gib"] > 0
-    assert profile["kv_cache_used_peak_gib"] > 0
+    assert profile["kv_cache_used_gib"] > 0
+    assert profile["kv_cache_peak_gib"] > 0
 
 
 def test_http_generate_endpoint_returns_json_profile():
@@ -174,6 +176,7 @@ def test_http_generate_endpoint_returns_json_profile():
         assert payload["text"] == "AB"
         assert payload["token_ids"] == [10, 11]
         assert payload["metrics"]["generated_tokens"] == 2
+        assert "model_bytes" not in payload["metrics"]
     finally:
         server.shutdown()
         thread.join()

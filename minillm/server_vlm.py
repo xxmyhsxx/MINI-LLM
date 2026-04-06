@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from PIL import Image
 
-from minillm.cli import bytes_to_gib
+from minillm.cli import summarize_live_memory_profile, summarize_request_metrics
 from minillm.engine.vlm_engine import VLMEngine
 from minillm.sampling_params import SamplingParams
 
@@ -101,11 +101,7 @@ class VLMInferenceService:
         """返回当前显存画像。"""
         with self.lock:
             profile = self.engine.get_memory_profile()
-        profile["model_gib"] = bytes_to_gib(profile["model_bytes"])
-        profile["kv_cache_total_gib"] = bytes_to_gib(profile["kv_cache_total_bytes"])
-        profile["kv_cache_used_current_gib"] = bytes_to_gib(profile["kv_cache_used_bytes"])
-        profile["kv_cache_used_peak_gib"] = bytes_to_gib(profile["kv_cache_peak_used_bytes"])
-        return profile
+        return summarize_live_memory_profile(profile)
 
     def generate(
         self,
@@ -184,7 +180,7 @@ def create_handler(service: VLMInferenceService):
                 apply_chat_template = payload.get("apply_chat_template", True)
                 result = service.generate(prompt, images, sampling_params, apply_chat_template=apply_chat_template)
                 if payload.get("profile", False):
-                    result["metrics"] = service.memory()
+                    result["metrics"] = summarize_request_metrics(result)
                 self.send_json(HTTPStatus.OK, result)
             except AssertionError as exc:
                 self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})

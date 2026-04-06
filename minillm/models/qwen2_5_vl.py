@@ -1,30 +1,24 @@
-"""Qwen2.5-VL multimodal model implementation."""
+"""Qwen2.5-VL 多模态模型实现。"""
 
 import itertools
+from typing import Optional
 
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple
+import torch.nn.functional as F
 
 from minillm.models.qwen2 import Qwen2ForCausalLM
 from minillm.vision.vision_encoder import Qwen2_5_VisionTransformer
-from minillm.utils.context import set_context, reset_context
 
 
 class Qwen2_5_VLForConditionalGeneration(nn.Module):
-    """Qwen2.5-VL model with vision encoder and language model."""
+    """Qwen2.5-VL 模型，包含视觉编码器和语言模型。"""
 
     def __init__(self, config):
         super().__init__()
         self.config = config
-
-        # Vision encoder
         self.visual = Qwen2_5_VisionTransformer(config.vision_config)
-
-        # Language model (reuse Qwen2 implementation)
         self.language_model = Qwen2ForCausalLM(config.text_config)
-
-        # 缓存融合视觉特征的输入 embedding，供解码阶段使用
         self._cached_input_embeds = None
         self._cached_seq_len = 0
         self.rope_deltas = None
@@ -100,7 +94,7 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module):
         image_grid_thw: torch.LongTensor,
         attention_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """计算 Qwen2.5-VL 的 3D mRoPE position_ids 和 rope_deltas。"""
+        """计算 Qwen2.5-VL 的 3D mRoPE 位置编码。"""
         fast_path = self._get_rope_index_single_image(input_ids, image_grid_thw)
         if fast_path is not None and attention_mask is None:
             return fast_path
@@ -162,6 +156,19 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module):
         rope_deltas = torch.tensor(mrope_position_deltas, device=input_ids.device).unsqueeze(1)
         return position_ids, rope_deltas
 
+    def get_position_offset(
+        self,
+        input_ids: torch.LongTensor,
+        image_grid_thw: torch.LongTensor | None,
+    ) -> int:
+        """返回多模态 decode 阶段的额外位置偏移量。"""
+        if image_grid_thw is None:
+            return 0
+        if input_ids.ndim == 1:
+            input_ids = input_ids.unsqueeze(0)
+        _, rope_deltas = self.get_rope_index(input_ids=input_ids, image_grid_thw=image_grid_thw)
+        return int(rope_deltas[0, 0].item())
+
     def compute_3d_position_ids(
         self,
         input_ids: torch.LongTensor,
@@ -169,7 +176,7 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module):
         inputs_embeds: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """计算当前 step 的 3D 位置编码。"""
+        """计算当前 step 的位置编码。"""
         if image_grid_thw is not None:
             position_ids, rope_deltas = self.get_rope_index(
                 input_ids=input_ids,
@@ -179,84 +186,70 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module):
             self.rope_deltas = rope_deltas
             return position_ids[:, 0]
 
-        batch_size, seq_len, _ = inputs_embeds.shape
-        position_ids = torch.arange(seq_len, device=inputs_embeds.device)
-        position_ids = position_ids.view(1, 1, -1).expand(3, batch_size, -1)
-        return position_ids[:, 0]
+        if inputs_embeds.ndim == 3:
+            _, seq_len, _ = inputs_embeds.shape
+        else:
+            seq_len = inputs_embeds.shape[0]
+        return torch.arange(seq_len, device=inputs_embeds.device, dtype=torch.long)
 
-
-    def forward(
+    def forward_hidden(
         self,
         input_ids: torch.LongTensor,
-        positions: torch.Tensor,
+        positions: torch.Tensor | None,
         pixel_values: Optional[torch.FloatTensor] = None,
         image_grid_thw: Optional[torch.LongTensor] = None,
-        use_cache: bool = False,
-    ):
-        """Forward pass with vision and text inputs.
-
-        Args:
-            input_ids: Text token IDs with vision placeholders
-            positions: Position indices for RoPE
-            pixel_values: Image patches (seq_len, channels)
-            image_grid_thw: Grid dimensions (num_images, 3) for [t, h, w]
-            use_cache: If True, reuse cached embeddings for tokens already processed
-        """
-        batch_size, seq_len = input_ids.shape
-
-        if use_cache and self._cached_input_embeds is not None and pixel_values is None and image_grid_thw is None:
-            new_embeds = self.language_model.model.embed_tokens(input_ids)
-            hidden_states = new_embeds
-            position_ids = self._get_decode_position_ids(input_ids, hidden_states)
-            self._cached_seq_len += input_ids.shape[1]
-        else:
+    ) -> torch.Tensor:
+        """返回可直接送入语言头的隐藏状态。"""
+        if pixel_values is not None and image_grid_thw is not None:
+            if input_ids.ndim == 1:
+                input_ids = input_ids.unsqueeze(0)
             hidden_states = self._merge_inputs(input_ids, pixel_values, image_grid_thw)
-            if use_cache:
-                self._cached_input_embeds = hidden_states
-                self._cached_seq_len = seq_len
             position_ids = self.compute_3d_position_ids(
                 input_ids=input_ids,
                 image_grid_thw=image_grid_thw,
                 inputs_embeds=hidden_states,
             )
+            hidden_states = hidden_states.squeeze(0)
+            return self.language_model.model.forward_embeds(hidden_states, position_ids)
 
-        hidden_states = hidden_states.squeeze(0)
-        hidden_states = self.language_model.model.forward_embeds(hidden_states, position_ids)
+        if input_ids.ndim == 2:
+            assert input_ids.shape[0] == 1, "当前仅支持单请求多模态 prefill"
+            input_ids = input_ids.squeeze(0)
 
-        # Take only the last token and compute logits directly
-        # hidden_states shape: (seq_len, hidden_size)
-        last_hidden = hidden_states[-1:, :]  # (1, hidden_size)
+        hidden_states = self.language_model.model.embed_tokens(input_ids)
+        if positions is None:
+            positions = torch.arange(input_ids.shape[0], device=input_ids.device, dtype=torch.long)
+        return self.language_model.model.forward_embeds(hidden_states, positions)
 
-        # Compute logits directly without going through LMHead's prefill logic
-        import torch.nn.functional as F
-        logits = F.linear(last_hidden, self.language_model.lm_head.weight)  # (1, vocab_size)
-        logits = logits.unsqueeze(0)  # (1, 1, vocab_size) for compatibility
-
+    def forward(
+        self,
+        input_ids: torch.LongTensor,
+        positions: torch.Tensor | None,
+        pixel_values: Optional[torch.FloatTensor] = None,
+        image_grid_thw: Optional[torch.LongTensor] = None,
+        use_cache: bool = False,
+    ):
+        """前向传播，兼容旧接口并返回 logits。"""
+        del use_cache
+        hidden_states = self.forward_hidden(input_ids, positions, pixel_values, image_grid_thw)
+        logits = self.compute_logits(hidden_states)
+        if logits.ndim == 2 and logits.shape[0] == 1:
+            return logits.unsqueeze(0)
+        if pixel_values is not None or image_grid_thw is not None:
+            return logits[-1:, :].unsqueeze(0)
         return logits
 
+    def compute_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """将隐藏状态映射到词表 logits。"""
+        if hidden_states.dtype != self.language_model.lm_head.weight.dtype:
+            hidden_states = hidden_states.to(self.language_model.lm_head.weight.dtype)
+        return self.language_model.compute_logits(hidden_states)
+
     def _reset_cache(self):
-        """清除 embedding 缓存"""
+        """重置兼容字段。"""
         self._cached_input_embeds = None
         self._cached_seq_len = 0
         self.rope_deltas = None
-
-    def _get_decode_position_ids(
-        self,
-        input_ids: torch.LongTensor,
-        inputs_embeds: torch.Tensor,
-    ) -> torch.Tensor:
-        """计算 decode 阶段新增 token 的位置编码。"""
-        batch_size = input_ids.shape[0]
-        base_position = self._cached_seq_len
-        if self.rope_deltas is not None:
-            base_position += int(self.rope_deltas[0, 0].item())
-        last_position = torch.full(
-            (3, batch_size, 1),
-            base_position,
-            dtype=torch.long,
-            device=inputs_embeds.device,
-        )
-        return last_position[:, 0]
 
     def _merge_inputs(
         self,
@@ -265,10 +258,8 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module):
         image_grid_thw: Optional[torch.LongTensor] = None,
     ) -> torch.Tensor:
         """构建融合视觉特征后的输入 embedding。"""
-        batch_size, seq_len = input_ids.shape
         if pixel_values is not None and image_grid_thw is not None:
-            vision_outputs = self.visual(pixel_values, image_grid_thw)
-            vision_embeds = vision_outputs
+            vision_embeds = self.visual(pixel_values, image_grid_thw)
             hidden_states = self.language_model.model.embed_tokens(input_ids)
             image_token_id = getattr(self.config, "image_token_id", 151655)
             vision_mask = input_ids == image_token_id
@@ -295,68 +286,41 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module):
         eos_token_id: int | list[int] | None = None,
         ignore_eos: bool = False,
     ):
-        """Generate text with vision context."""
-        batch_size, seq_len = input_ids.shape
-
-        # 开始生成前重置缓存
+        """兼容旧接口的简单生成实现。"""
+        seq_len = input_ids.shape[-1]
+        position_offset = self.get_position_offset(input_ids, image_grid_thw)
         self._reset_cache()
 
         for step in range(max_new_tokens):
             if step == 0:
                 current_input_ids = input_ids
-                positions = torch.arange(seq_len, device=input_ids.device, dtype=torch.long)
-                cu_seqlens = torch.tensor([0, seq_len], dtype=torch.int32, device=input_ids.device)
-                slot_mapping = torch.arange(seq_len, dtype=torch.int32, device=input_ids.device)
-                set_context(
-                    is_prefill=True,
-                    cu_seqlens_q=cu_seqlens,
-                    cu_seqlens_k=cu_seqlens,
-                    max_seqlen_q=seq_len,
-                    max_seqlen_k=seq_len,
-                    slot_mapping=slot_mapping,
-                )
+                current_positions = None
                 current_pixel_values = pixel_values
                 current_image_grid_thw = image_grid_thw
             else:
                 current_input_ids = input_ids[:, -1:]
-                positions = torch.tensor([seq_len - 1], device=input_ids.device, dtype=torch.long)
-                slot = seq_len - 1
-                slot_mapping = torch.tensor([slot], dtype=torch.int32, device=input_ids.device)
-                context_lens = torch.tensor([seq_len], dtype=torch.int32, device=input_ids.device)
-                num_blocks = (seq_len + 255) // 256
-                block_tables = torch.arange(num_blocks, dtype=torch.int32, device=input_ids.device).view(1, -1)
-                set_context(
-                    is_prefill=False,
-                    slot_mapping=slot_mapping,
-                    context_lens=context_lens,
-                    block_tables=block_tables,
+                current_positions = torch.tensor(
+                    [seq_len - 1 + position_offset],
+                    device=input_ids.device,
+                    dtype=torch.long,
                 )
                 current_pixel_values = None
                 current_image_grid_thw = None
 
-            try:
-                logits = self.forward(
-                    input_ids=current_input_ids,
-                    positions=positions,
-                    pixel_values=current_pixel_values,
-                    image_grid_thw=current_image_grid_thw,
-                    use_cache=True,
-                )
-            finally:
-                reset_context()
+            logits = self.forward(
+                input_ids=current_input_ids,
+                positions=current_positions,
+                pixel_values=current_pixel_values,
+                image_grid_thw=current_image_grid_thw,
+                use_cache=True,
+            )
+            next_token_logits = logits[:, -1, :]
 
-            next_token_logits = logits[:, -1, :]  # (batch_size, vocab_size)
-
-            # Sample next token
             if temperature > 0:
                 next_token_logits = next_token_logits / temperature
-
-                # Top-k filtering
                 if top_k > 0:
                     indices_to_remove = next_token_logits < torch.topk(next_token_logits, top_k)[0][..., -1, None]
-                    next_token_logits[indices_to_remove] = float('-inf')
-
-                # Top-p filtering
+                    next_token_logits[indices_to_remove] = float("-inf")
                 if top_p < 1.0:
                     sorted_logits, sorted_indices = torch.sort(next_token_logits, descending=True)
                     cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
@@ -364,24 +328,18 @@ class Qwen2_5_VLForConditionalGeneration(nn.Module):
                     sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
                     sorted_indices_to_remove[..., 0] = 0
                     indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                    next_token_logits[indices_to_remove] = float('-inf')
-
+                    next_token_logits[indices_to_remove] = float("-inf")
                 probs = torch.softmax(next_token_logits, dim=-1)
                 next_token = torch.multinomial(probs, num_samples=1)
             else:
                 next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
 
-            # Append to sequence
             input_ids = torch.cat([input_ids, next_token], dim=-1)
             seq_len += 1
 
-            # Check for EOS
             if not ignore_eos:
-                # Resolve eos_token_id if not provided
                 if eos_token_id is None:
-                    eos_token_id = getattr(self.config.text_config, 'eos_token_id', None)
-                
-                # Make it a list for easier checking
+                    eos_token_id = getattr(self.config.text_config, "eos_token_id", None)
                 if eos_token_id is not None:
                     eos_ids = [eos_token_id] if isinstance(eos_token_id, int) else eos_token_id
                     if next_token.item() in eos_ids:

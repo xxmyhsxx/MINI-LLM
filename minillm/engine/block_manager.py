@@ -204,3 +204,14 @@ class BlockManager:
             block.ref_count = 0
             self._deallocate_block(block_id)
         self.hash_to_block_id.clear()
+
+    def reset(self):
+        """重置块管理器状态，释放所有块。"""
+        for block in self.blocks:
+            block.ref_count = 0
+            block.hash = -1
+            block.token_ids = []
+        self.free_block_ids.clear()
+        self.free_block_ids.extend(range(len(self.blocks)))
+        self.used_block_ids.clear()
+        self.hash_to_block_id.clear()

@@ -74,11 +74,21 @@ class ModelRunner:
         config = self.config
         hf_config = config.hf_config
 
-        num_kv_heads = hf_config.num_key_value_heads
-        head_dim = getattr(hf_config, "head_dim", hf_config.hidden_size // hf_config.num_attention_heads)
+        # 处理 VLM 配置（text_config 嵌套）
+        if hasattr(hf_config, 'text_config'):
+            text_config = hf_config.text_config
+            num_kv_heads = text_config.num_key_value_heads
+            head_dim = getattr(text_config, "head_dim", text_config.hidden_size // text_config.num_attention_heads)
+            num_hidden_layers = text_config.num_hidden_layers
+            torch_dtype = text_config.torch_dtype
+        else:
+            num_kv_heads = hf_config.num_key_value_heads
+            head_dim = getattr(hf_config, "head_dim", hf_config.hidden_size // hf_config.num_attention_heads)
+            num_hidden_layers = hf_config.num_hidden_layers
+            torch_dtype = hf_config.torch_dtype
         block_bytes = (
-            2 * hf_config.num_hidden_layers * self.block_size
-            * num_kv_heads * head_dim * hf_config.torch_dtype.itemsize
+            2 * num_hidden_layers * self.block_size
+            * num_kv_heads * head_dim * torch_dtype.itemsize
         )
 
         if config.cache_size_tokens is not None:
@@ -95,11 +105,12 @@ class ModelRunner:
         assert config.num_kvcache_blocks > 0, f"KV Cache 块数必须大于 0: {config.num_kvcache_blocks}"
         self.kv_cache = torch.empty(
             2,
-            hf_config.num_hidden_layers,
+            num_hidden_layers,
             config.num_kvcache_blocks,
             self.block_size,
             num_kv_heads,
             head_dim,
+            device='cuda',
         )
 
         layer_id = 0
@@ -322,14 +333,21 @@ class ModelRunner:
         """捕获 decode 阶段的 CUDA Graph。"""
         config = self.config
         hf_config = config.hf_config
+
+        # 处理 VLM 配置（text_config 嵌套）
+        if hasattr(hf_config, 'text_config'):
+            hidden_size = hf_config.text_config.hidden_size
+        else:
+            hidden_size = hf_config.hidden_size
+
         max_bs = min(config.max_num_seqs, 512)
         max_num_blocks = (config.max_model_len + self.block_size - 1) // self.block_size
-        input_ids = torch.zeros(max_bs, dtype=torch.int64)
-        positions = torch.zeros(max_bs, dtype=torch.int64)
-        slot_mapping = torch.zeros(max_bs, dtype=torch.int32)
-        context_lens = torch.zeros(max_bs, dtype=torch.int32)
-        block_tables = torch.full((max_bs, max_num_blocks), -1, dtype=torch.int32)
-        outputs = torch.zeros(max_bs, hf_config.hidden_size)
+        input_ids = torch.zeros(max_bs, dtype=torch.int64, device='cuda')
+        positions = torch.zeros(max_bs, dtype=torch.int64, device='cuda')
+        slot_mapping = torch.zeros(max_bs, dtype=torch.int32, device='cuda')
+        context_lens = torch.zeros(max_bs, dtype=torch.int32, device='cuda')
+        block_tables = torch.full((max_bs, max_num_blocks), -1, dtype=torch.int32, device='cuda')
+        outputs = torch.zeros(max_bs, hidden_size, device='cuda')
         self.graph_bs = [1, 2, 4, 8] + list(range(16, max_bs + 1, 16))
         self.graphs = {}
         self.graph_pool = None

@@ -11,6 +11,26 @@ from pathlib import Path
 
 import torch
 from safetensors import safe_open
+from transformers import AutoConfig
+
+
+def get_vlm_model_class(model_path: str):
+    """根据模型配置自动选择 VLM 模型类。
+
+    Args:
+        model_path: 模型路径
+
+    Returns:
+        VLM 模型类
+    """
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    model_type = config.model_type.lower()
+
+    if 'qwen2_vl' in model_type or 'qwen2_5_vl' in model_type or 'qwen2.5_vl' in model_type:
+        from minillm.models.qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
+        return Qwen2_5_VLForConditionalGeneration
+    else:
+        raise ValueError(f"不支持的 VLM 模型类型: {model_type}")
 
 
 def load_vlm_model(model: torch.nn.Module, model_path: str) -> None:

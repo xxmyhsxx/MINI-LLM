@@ -99,23 +99,20 @@ class VisionAttention(nn.Module):
 
         if position_embeddings is not None:
             cos, sin = position_embeddings
-            rotary_dim = cos.shape[-1]
-            q_rot = q[..., :rotary_dim]
-            k_rot = k[..., :rotary_dim]
-            q_pass = q[..., rotary_dim:]
-            k_pass = k[..., rotary_dim:]
-            q_rot = q_rot.reshape(seq_len, self.num_heads, -1, 2)
-            k_rot = k_rot.reshape(seq_len, self.num_heads, -1, 2)
-            cos = cos.reshape(seq_len, -1, 2)[..., 0].unsqueeze(1)
-            sin = sin.reshape(seq_len, -1, 2)[..., 0].unsqueeze(1)
-            q_rot_real = q_rot[..., 0] * cos - q_rot[..., 1] * sin
-            q_rot_imag = q_rot[..., 0] * sin + q_rot[..., 1] * cos
-            q_rot = torch.stack([q_rot_real, q_rot_imag], dim=-1).reshape(seq_len, self.num_heads, rotary_dim)
-            k_rot_real = k_rot[..., 0] * cos - k_rot[..., 1] * sin
-            k_rot_imag = k_rot[..., 0] * sin + k_rot[..., 1] * cos
-            k_rot = torch.stack([k_rot_real, k_rot_imag], dim=-1).reshape(seq_len, self.num_heads, rotary_dim)
-            q = torch.cat([q_rot, q_pass], dim=-1)
-            k = torch.cat([k_rot, k_pass], dim=-1)
+            # 应用 RoPE: 使用 rotate_half 方法 (与 HF 对齐)
+            # cos/sin shape: (seq_len, rotary_dim) -> (seq_len, 1, rotary_dim) for broadcasting
+            cos = cos.unsqueeze(1)  # (seq_len, 1, rotary_dim)
+            sin = sin.unsqueeze(1)  # (seq_len, 1, rotary_dim)
+
+            # rotate_half: 将后半部分移到前面并取负
+            def rotate_half(x):
+                x1 = x[..., : x.shape[-1] // 2]
+                x2 = x[..., x.shape[-1] // 2 :]
+                return torch.cat((-x2, x1), dim=-1)
+
+            # 应用 RoPE: q_embed = q * cos + rotate_half(q) * sin
+            q = (q * cos) + (rotate_half(q) * sin)
+            k = (k * cos) + (rotate_half(k) * sin)
 
         q = q.contiguous()
         k = k.contiguous()

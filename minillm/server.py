@@ -6,7 +6,7 @@ import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from minillm.cli import build_engine_kwargs, bytes_to_gib, validate_args
+from minillm.cli import build_engine_kwargs, summarize_live_memory_profile, summarize_request_metrics, validate_args
 from minillm.engine.llm_engine import LLM
 from minillm.sampling_params import SamplingParams
 
@@ -71,7 +71,7 @@ def sanitize_metrics(metrics: dict, include_token_ids: bool, include_profile: bo
     Args:
         metrics: 引擎最终 metrics 事件
         include_token_ids: 是否保留 token_ids
-        include_profile: 是否保留完整性能画像
+        include_profile: 是否保留精简后的性能画像
 
     Returns:
         可直接返回给客户端的字典
@@ -80,20 +80,7 @@ def sanitize_metrics(metrics: dict, include_token_ids: bool, include_profile: bo
     if include_token_ids:
         payload["token_ids"] = metrics["token_ids"]
     if include_profile:
-        profile = {
-            key: value
-            for key, value in metrics.items()
-            if key not in {"type", "seq_id", "text", "token_ids"}
-        }
-        profile["model_gib"] = bytes_to_gib(metrics["model_bytes"])
-        profile["kv_cache_total_gib"] = bytes_to_gib(metrics["kv_cache_total_bytes"])
-        profile["kv_cache_used_current_gib"] = bytes_to_gib(metrics["kv_cache_used_bytes"])
-        profile["kv_cache_used_peak_gib"] = bytes_to_gib(metrics["kv_cache_peak_used_bytes"])
-        profile["cuda_allocated_gib"] = bytes_to_gib(metrics["cuda_memory_allocated_bytes"])
-        profile["cuda_peak_allocated_gib"] = bytes_to_gib(metrics["cuda_max_memory_allocated_bytes"])
-        profile["cuda_reserved_gib"] = bytes_to_gib(metrics["cuda_memory_reserved_bytes"])
-        profile["cuda_peak_reserved_gib"] = bytes_to_gib(metrics["cuda_max_memory_reserved_bytes"])
-        payload["metrics"] = profile
+        payload["metrics"] = summarize_request_metrics(metrics)
     return payload
 
 
@@ -131,11 +118,7 @@ class InferenceService:
         """返回当前显存画像。"""
         with self.lock:
             profile = self.llm.get_memory_profile()
-        profile["model_gib"] = bytes_to_gib(profile["model_bytes"])
-        profile["kv_cache_total_gib"] = bytes_to_gib(profile["kv_cache_total_bytes"])
-        profile["kv_cache_used_current_gib"] = bytes_to_gib(profile["kv_cache_used_bytes"])
-        profile["kv_cache_used_peak_gib"] = bytes_to_gib(profile["kv_cache_peak_used_bytes"])
-        return profile
+        return summarize_live_memory_profile(profile)
 
     def generate(self, prompt: str | list[int], sampling_params: SamplingParams) -> dict:
         """执行单次非流式生成并返回最终 metrics。"""

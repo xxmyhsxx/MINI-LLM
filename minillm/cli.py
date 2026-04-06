@@ -14,6 +14,42 @@ def bytes_to_gib(num_bytes: int) -> float:
     return num_bytes / (1024 ** 3)
 
 
+def summarize_request_metrics(metrics: dict) -> dict:
+    """将单次请求 metrics 压缩为精简摘要。"""
+    return {
+        "ttft_seconds": metrics["ttft_seconds"],
+        "total_time_seconds": metrics["total_time_seconds"],
+        "prompt_tokens": metrics["prompt_tokens"],
+        "generated_tokens": metrics["generated_tokens"],
+        "overall_tokens_per_second": metrics["overall_tokens_per_second"],
+        "decode_tokens_per_second": metrics["decode_tokens_per_second"],
+        "model_gib": bytes_to_gib(metrics["model_bytes"]),
+        "kv_cache_total_gib": bytes_to_gib(metrics["kv_cache_total_bytes"]),
+        "kv_cache_peak_gib": bytes_to_gib(metrics["kv_cache_peak_used_bytes"]),
+        "kv_cache_peak_blocks": metrics["kv_cache_peak_used_blocks"],
+        "kv_cache_total_blocks": metrics["kv_cache_total_blocks"],
+        "cuda_peak_allocated_gib": bytes_to_gib(metrics["cuda_max_memory_allocated_bytes"]),
+        "cuda_peak_reserved_gib": bytes_to_gib(metrics["cuda_max_memory_reserved_bytes"]),
+    }
+
+
+def summarize_live_memory_profile(profile: dict) -> dict:
+    """将实时显存画像压缩为精简摘要。"""
+    return {
+        "model_gib": bytes_to_gib(profile["model_bytes"]),
+        "kv_cache_total_gib": bytes_to_gib(profile["kv_cache_total_bytes"]),
+        "kv_cache_used_gib": bytes_to_gib(profile["kv_cache_used_bytes"]),
+        "kv_cache_peak_gib": bytes_to_gib(profile["kv_cache_peak_used_bytes"]),
+        "kv_cache_used_blocks": profile["kv_cache_used_blocks"],
+        "kv_cache_peak_blocks": profile["kv_cache_peak_used_blocks"],
+        "kv_cache_total_blocks": profile["kv_cache_total_blocks"],
+        "cuda_allocated_gib": bytes_to_gib(profile["cuda_memory_allocated_bytes"]),
+        "cuda_peak_allocated_gib": bytes_to_gib(profile["cuda_max_memory_allocated_bytes"]),
+        "cuda_reserved_gib": bytes_to_gib(profile["cuda_memory_reserved_bytes"]),
+        "cuda_peak_reserved_gib": bytes_to_gib(profile["cuda_max_memory_reserved_bytes"]),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     """构建命令行参数解析器。
 
@@ -161,23 +197,21 @@ def format_metrics(metrics: dict) -> str:
     Returns:
         可读字符串
     """
+    summary = summarize_request_metrics(metrics)
     lines = [
-        f"TTFT: {metrics['ttft_seconds']:.4f}s",
-        f"Total Time: {metrics['total_time_seconds']:.4f}s",
-        f"Prompt Tokens: {metrics['prompt_tokens']}",
-        f"Generated Tokens: {metrics['generated_tokens']}",
-        f"Overall Speed: {metrics['overall_tokens_per_second']:.2f} tok/s",
-        f"Decode Speed: {metrics['decode_tokens_per_second']:.2f} tok/s",
-        f"Model Memory: {bytes_to_gib(metrics['model_bytes']):.2f} GiB",
-        f"KV Cache Total: {bytes_to_gib(metrics['kv_cache_total_bytes']):.2f} GiB",
-        f"KV Cache Used Current: {bytes_to_gib(metrics['kv_cache_used_bytes']):.2f} GiB",
-        f"KV Cache Used Peak: {bytes_to_gib(metrics['kv_cache_peak_used_bytes']):.2f} GiB",
-        f"KV Blocks Used Current: {metrics['kv_cache_used_blocks']} / {metrics['kv_cache_total_blocks']}",
-        f"KV Blocks Used Peak: {metrics['kv_cache_peak_used_blocks']} / {metrics['kv_cache_total_blocks']}",
-        f"CUDA Allocated: {bytes_to_gib(metrics['cuda_memory_allocated_bytes']):.2f} GiB",
-        f"CUDA Peak Allocated: {bytes_to_gib(metrics['cuda_max_memory_allocated_bytes']):.2f} GiB",
-        f"CUDA Reserved: {bytes_to_gib(metrics['cuda_memory_reserved_bytes']):.2f} GiB",
-        f"CUDA Peak Reserved: {bytes_to_gib(metrics['cuda_max_memory_reserved_bytes']):.2f} GiB",
+        f"Latency: TTFT {summary['ttft_seconds']:.4f}s | Total {summary['total_time_seconds']:.4f}s",
+        f"Tokens: Prompt {summary['prompt_tokens']} | Generated {summary['generated_tokens']}",
+        (
+            f"Throughput: Overall {summary['overall_tokens_per_second']:.2f} tok/s | "
+            f"Decode {summary['decode_tokens_per_second']:.2f} tok/s"
+        ),
+        (
+            f"Memory: Model {summary['model_gib']:.2f} GiB | "
+            f"KV Peak {summary['kv_cache_peak_gib']:.2f}/{summary['kv_cache_total_gib']:.2f} GiB "
+            f"({summary['kv_cache_peak_blocks']}/{summary['kv_cache_total_blocks']} blocks) | "
+            f"CUDA Peak {summary['cuda_peak_allocated_gib']:.2f}/{summary['cuda_peak_reserved_gib']:.2f} GiB "
+            f"(alloc/reserved)"
+        ),
     ]
     return "\n".join(lines)
 
